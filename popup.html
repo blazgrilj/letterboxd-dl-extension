@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Letterboxd Download Settings</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    
+    body {
+      width: 320px;
+      padding: 16px;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1c1c1c;
+      color: #fff;
+      margin: 0;
+    }
+    
+    h3 {
+      margin: 0 0 16px 0;
+      font-size: 14px;
+      color: #9ab;
+    }
+    
+    .tracker {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 0;
+      border-bottom: 1px solid #333;
+      gap: 8px;
+    }
+    
+    .tracker:last-of-type {
+      border-bottom: none;
+    }
+    
+    .tracker-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      min-width: 0;
+    }
+    
+    .tracker-name {
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    
+    .search-type {
+      font-size: 10px;
+      color: #666;
+      background: #2a2a2a;
+      padding: 2px 6px;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+    
+    .delete-btn {
+      background: #333;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #999;
+      cursor: pointer;
+      font-size: 12px;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      line-height: 1;
+      transition: all 0.2s;
+    }
+    
+    .delete-btn:hover {
+      background: #ff4444;
+      border-color: #ff4444;
+      color: #fff;
+    }
+    
+    .toggle {
+      position: relative;
+      width: 40px;
+      height: 20px;
+      background: #444;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    
+    .toggle.active {
+      background: #00c030;
+    }
+    
+    .toggle::after {
+      content: '';
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      background: #fff;
+      border-radius: 50%;
+      top: 2px;
+      left: 2px;
+      transition: transform 0.2s;
+    }
+    
+    .toggle.active::after {
+      transform: translateX(20px);
+    }
+    
+    .add-section {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 2px solid #333;
+    }
+    
+    .add-section h4 {
+      margin: 0 0 12px 0;
+      font-size: 12px;
+      color: #9ab;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .form-group {
+      margin-bottom: 12px;
+    }
+    
+    label {
+      display: block;
+      font-size: 11px;
+      color: #9ab;
+      margin-bottom: 4px;
+    }
+    
+    input[type="text"], input[type="url"] {
+      width: 100%;
+      padding: 8px;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 12px;
+    }
+    
+    input::placeholder {
+      color: #666;
+    }
+    
+    input:focus {
+      outline: none;
+      border-color: #00c030;
+    }
+    
+    .search-option {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    
+    .radio-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #ccc;
+      cursor: pointer;
+    }
+    
+    .radio-label input[type="radio"] {
+      margin: 0;
+      accent-color: #00c030;
+    }
+    
+    .hint {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+    
+    .hint code {
+      background: #2a2a2a;
+      padding: 2px 4px;
+      border-radius: 3px;
+      color: #9ab;
+    }
+    
+    .add-btn {
+      width: 100%;
+      padding: 10px;
+      background: #00c030;
+      border: none;
+      border-radius: 4px;
+      color: #000;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 12px;
+      transition: background 0.2s;
+    }
+    
+    .add-btn:hover {
+      background: #00d940;
+    }
+    
+    .add-btn:disabled {
+      background: #444;
+      color: #666;
+      cursor: not-allowed;
+    }
+    
+    .error {
+      color: #ff4444;
+      font-size: 11px;
+      margin-top: 4px;
+      display: none;
+    }
+    
+    .error.show {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h3>Download Sources</h3>
+  
+  <div id="tracker-list">
+    <!-- Trackers will be rendered here dynamically -->
+  </div>
+
+  <div class="add-section">
+    <h4>Add Custom Tracker</h4>
+    
+    <div class="form-group">
+      <label>Tracker Name</label>
+      <input type="text" id="custom-name" placeholder="e.g. YTS, EZTV">
+    </div>
+    
+    <div class="form-group">
+      <label>Search URL</label>
+      <input type="url" id="custom-url" placeholder="https://example.com/search?q={query}">
+    </div>
+    
+    <div class="form-group">
+      <label>Search Type</label>
+      <div class="search-option">
+        <label class="radio-label">
+          <input type="radio" name="search-type" value="title" checked>
+          Movie Title
+        </label>
+        <label class="radio-label">
+          <input type="radio" name="search-type" value="imdb">
+          IMDB ID
+        </label>
+      </div>
+    </div>
+    
+    <div class="hint">
+      Use <code>{query}</code> as placeholder.<br>
+      Title: <code>The Matrix 1999</code> | IMDB: <code>tt0133093</code>
+    </div>
+    
+    <div class="error" id="error-msg"></div>
+    <button class="add-btn" id="add-tracker">Add Tracker</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
