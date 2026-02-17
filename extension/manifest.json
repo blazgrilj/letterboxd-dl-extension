@@ -1,0 +1,45 @@
+{
+  "manifest_version": 2,
+  "name": "Letterboxd DL Extension",
+  "description": "Adds a Download button with tracker list and shows release dates on Letterboxd.",
+  "version": "1.1",
+
+  "permissions": [
+    "storage",
+    "activeTab",
+    "*://letterboxd.com/*",
+    "*://www.dvdsreleasedates.com/*"
+  ],
+
+  "background": {
+    "scripts": ["release_dates_service.js"],
+    "persistent": false
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["*://letterboxd.com/film/*"],
+      "js": ["content.js"]
+    }
+  ],
+
+  "browser_action": {
+    "default_popup": "popup.html"
+  },
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "letterboxddl@blazgrilj.github.com",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  }
+}

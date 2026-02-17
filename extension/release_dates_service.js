@@ -1,15 +1,11 @@
-// ========================================
-// Constants
-// ========================================
+if (typeof browser === "undefined") {
+    var browser = chrome;
+}
 
 const BASE_URL = "https://www.dvdsreleasedates.com";
 const SEARCH_URL = `${BASE_URL}/search/`;
 
-// ========================================
-// Message Listener
-// ========================================
-
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action !== "getReleaseDates") return;
 
   handleGetReleaseDates(request)
@@ -18,12 +14,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ success: false, error: err.message }),
     );
 
-  return true; // Required for async response
+  return true;
 });
-
-// ========================================
-// Main Handler
-// ========================================
 
 async function handleGetReleaseDates({ movieTitle, movieYear }) {
   const movieUrl = await searchMovie(movieTitle, movieYear);
@@ -32,9 +24,6 @@ async function handleGetReleaseDates({ movieTitle, movieYear }) {
   return { url: movieUrl, html };
 }
 
-// ========================================
-// Search Logic
-// ========================================
 
 async function searchMovie(title, year) {
   const response = await fetch(SEARCH_URL, {
@@ -66,10 +55,6 @@ async function searchMovie(title, year) {
   // Fallback to first result
   return toAbsoluteUrl(results[0].url);
 }
-
-// ========================================
-// Helpers
-// ========================================
 
 async function fetchHtml(url) {
   const response = await fetch(url);

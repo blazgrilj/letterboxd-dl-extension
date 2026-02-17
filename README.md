@@ -9,30 +9,27 @@ A browser extension that enhances Letterboxd movie pages by adding:
 
 ### Chrome / Chromium Browsers
 
-1. **Download or clone this repository**
-
-   ```bash
-   git clone https://github.com/yourusername/letterboxd-dl-extension.git
-   ```
-
-2. Open Chrome and go to: `chrome://extensions/`
-
-3. Enable **Developer Mode** (top-right corner)
-
-4. Click **Load unpacked** and select the folder with the extension
-
-5. The extension will now appear in your toolbar
-
----
+1. Go to the **Releases** page of this repository  
+2. Download the latest release and extract the `.zip` file
+3. Open Chrome and go to: `chrome://extensions/`
+4. Enable **Developer Mode** (top-right corner)
+5. Click **Load unpacked** and select the extracted extension folder
 
 ### Firefox
 
-Coming soon...
+1. Go to the **Releases** page of this repository
+2. Download the latest `.xpi` file
+3. Open Firefox and press **Ctrl + O**
+4. Select the downloaded `.xpi` file
+5. Confirm the installation when Firefox prompts you
 
----
 
 ## Usage
 
 1. Open any **Letterboxd movie page**
 2. Find the **Download button** near the TMDB, IMDB and WIKI button
 3. Click it to fetch **download options**
+
+## Screenshot
+
+![Screenshot](screenshot.png)

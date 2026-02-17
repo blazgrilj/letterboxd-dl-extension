@@ -1,10 +1,3 @@
-// ================================
-// State
-// ================================
-
-let cachedReleaseDates = null;
-let trackers = {};
-
 const DEFAULT_TRACKERS = {
   "1337x": {
     name: "1337x",
@@ -29,9 +22,13 @@ const DEFAULT_TRACKERS = {
   },
 };
 
-// ================================
-// Utilities
-// ================================
+if (typeof browser === "undefined") {
+  var browser = chrome;
+}
+
+let cachedReleaseDates = null;
+let cachedMovieUrl = null;
+let trackers = {};
 
 const qs = (selector, parent = document) => parent.querySelector(selector);
 
@@ -52,16 +49,11 @@ const buildTrackers = (config) =>
     ]),
   );
 
-// ================================
-// Settings
-// ================================
-
 async function loadSettings() {
   try {
-    const result = await chrome.storage.sync.get({
-      trackers: DEFAULT_TRACKERS,
-    });
-
+    const result = await new Promise((resolve) =>
+      browser.storage.sync.get({ trackers: DEFAULT_TRACKERS }, resolve),
+    );
     trackers = buildTrackers(result.trackers);
   } catch (err) {
     console.error("Error loading settings:", err);
@@ -69,26 +61,18 @@ async function loadSettings() {
   }
 }
 
-chrome.runtime.onMessage.addListener((request) => {
+browser.runtime.onMessage.addListener((request) => {
   if (request.action === "updateTrackers") {
     trackers = buildTrackers(request.trackers);
     refreshDropdown();
   }
 });
 
-// ================================
-// IMDB
-// ================================
-
 function getImdbId() {
   const link = qs('a[href*="imdb.com/title/tt"]');
   const match = link?.href.match(/tt\d+/);
   return match?.[0] ?? null;
 }
-
-// ================================
-// Dropdown
-// ================================
 
 function refreshDropdown() {
   qs(".download-dropdown")?.remove();
@@ -152,10 +136,6 @@ function createDropdown(searchQuery, imdbId) {
   return dropdown;
 }
 
-// ================================
-// Button
-// ================================
-
 function addDownloadButton() {
   const footer = qs("p.text-footer");
   if (!footer || qs(".download-movie-button")) return;
@@ -213,13 +193,34 @@ function addDownloadButton() {
 
   wrapper.appendChild(btn);
   wrapper.appendChild(createReleaseInfo());
+  wrapper.appendChild(createInfoButton());
 
   footer.parentNode.insertBefore(wrapper, footer.nextSibling);
 }
 
-// ================================
-// Release Dates
-// ================================
+function createInfoButton() {
+  const btn = createEl("a", {
+    textContent: "🛈",
+    href: cachedMovieUrl ?? "https://www.dvdsreleasedates.com",
+    target: "_blank",
+    rel: "noopener noreferrer",
+    title: "Source: dvdsreleasedates.com",
+    className: "release-info-btn",
+  });
+
+  Object.assign(btn.style, {
+    fontSize: "14px",
+    color: "#8f8f8f",
+    textDecoration: "none",
+    cursor: "pointer",
+    lineHeight: "1",
+  });
+
+  btn.addEventListener("mouseover", () => (btn.style.color = "#fff"));
+  btn.addEventListener("mouseout", () => (btn.style.color = "#8f8f8f"));
+
+  return btn;
+}
 
 function parseReleaseDates(html) {
   const doc = new DOMParser().parseFromString(html, "text/html");
@@ -308,10 +309,6 @@ function createReleaseInfo() {
   return el;
 }
 
-// ================================
-// Init
-// ================================
-
 (async function init() {
   await loadSettings();
 
@@ -323,7 +320,7 @@ function createReleaseInfo() {
   const title = qs("h1.headline-1.primaryname span.name")?.textContent.trim();
   const year = qs(".releasedate a")?.textContent.trim();
 
-  chrome.runtime.sendMessage(
+  browser.runtime.sendMessage(
     { action: "getReleaseDates", movieTitle: title, movieYear: year },
     (response) => {
       if (!response?.success) {
@@ -332,10 +329,16 @@ function createReleaseInfo() {
       }
 
       cachedReleaseDates = parseReleaseDates(response.html);
+      cachedMovieUrl = response.url;
 
       const infoEl = qs(".release-dates-info");
       if (infoEl) {
         infoEl.innerHTML = formatReleaseInfo(cachedReleaseDates);
+      }
+
+      const infoBtn = qs(".release-info-btn");
+      if (infoBtn) {
+        infoBtn.href = cachedMovieUrl;
       }
     },
   );
