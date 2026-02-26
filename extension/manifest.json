@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "name": "Letterboxd DL Extension",
   "description": "Adds a Download button with tracker list and shows release dates on Letterboxd.",
-  "version": "1.1",
+  "version": "1.1.1",
 
   "permissions": [
     "storage",
