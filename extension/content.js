@@ -22,6 +22,8 @@ const DEFAULT_TRACKERS = {
   },
 };
 
+const NO_RELEASE_DATA_MSG = "No release date information available";
+
 if (typeof browser === "undefined") {
   var browser = chrome;
 }
@@ -84,74 +86,121 @@ function createDropdown(searchQuery, imdbId) {
 
   Object.assign(dropdown.style, {
     position: "absolute",
-    background: "#1c1c1c",
-    border: "1px solid #333",
-    padding: "8px",
+    background: "#141414",
+    border: "1px solid #2a2a2a",
     borderRadius: "6px",
-    marginTop: "6px",
+    marginTop: "4px",
     zIndex: "9999",
-    minWidth: "180px",
+    minWidth: "160px",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+    overflow: "hidden",
   });
 
   const enabled = Object.values(trackers).filter((t) => t.enabled);
 
   if (!enabled.length) {
-    dropdown.appendChild(
-      createEl("div", {
-        textContent: "No sources enabled",
-        style: "color:#666;font-size:12px;padding:4px 0;",
-      }),
-    );
+    const empty = createEl("div", { textContent: "No sources enabled" });
+    Object.assign(empty.style, {
+      color: "#555",
+      fontSize: "12px",
+      padding: "10px 12px",
+    });
+    dropdown.appendChild(empty);
     return dropdown;
   }
 
-  enabled.forEach((source) => {
+  enabled.forEach((source, i) => {
     const query = source.searchType === "imdb" && imdbId ? imdbId : searchQuery;
 
-    const link = createEl("a", {
+    const item = createEl("a", {
       textContent: source.name,
       href: "#",
     });
 
-    Object.assign(link.style, {
+    Object.assign(item.style, {
       display: "block",
-      padding: "6px 0",
+      padding: "8px 12px",
       color: "#9ab",
       textDecoration: "none",
-      fontSize: "13px",
+      fontSize: "12px",
       cursor: "pointer",
+      borderTop: i === 0 ? "none" : "1px solid #1e1e1e",
+      transition: "background 0.1s, color 0.1s",
     });
 
-    link.addEventListener("click", (e) => {
+    item.addEventListener("click", (e) => {
       e.preventDefault();
       window.open(source.url(query), "_blank", "noopener,noreferrer");
     });
 
-    link.addEventListener("mouseover", () => (link.style.color = "#fff"));
-    link.addEventListener("mouseout", () => (link.style.color = "#9ab"));
+    item.addEventListener("mouseover", () => {
+      item.style.background = "#1e1e1e";
+      item.style.color = "#fff";
+    });
+    item.addEventListener("mouseout", () => {
+      item.style.background = "transparent";
+      item.style.color = "#9ab";
+    });
 
-    dropdown.appendChild(link);
+    dropdown.appendChild(item);
   });
 
   return dropdown;
 }
 
+function injectStyles() {
+  if (qs("#download-extension-styles")) return;
+
+  const reference = qs(".micro-button");
+  if (!reference) return;
+
+  const computed = window.getComputedStyle(reference);
+  const props = [
+    "border",
+    "border-radius",
+    "font-size",
+    "font-weight",
+    "line-height",
+    "text-decoration",
+    "cursor",
+    "display",
+    "align-items",
+    "padding",
+    "font-family",
+    "letter-spacing",
+    "text-transform",
+  ];
+
+  const rules = props
+    .map((p) => `${p}: ${computed.getPropertyValue(p)};`)
+    .join("\n");
+
+  const style = document.createElement("style");
+  style.id = "download-extension-styles";
+  style.textContent = `
+    .download-movie-button {
+      ${rules}
+      color: rgba(0, 192, 48, 1);
+    }
+    .download-movie-button:hover,
+    .download-movie-button:active {
+      color: rgba(0, 255, 64, 1);
+      border-color: #9ab;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 function addDownloadButton() {
-  const footer = qs("p.text-footer");
-  if (!footer || qs(".download-movie-button")) return;
+  const footer = qs("p.text-link.text-footer");
+  if (!footer || qs(".download-movie-button")) return false;
+
+  injectStyles();
 
   const btn = createEl("a", {
     textContent: "Download",
     href: "#",
-    className: "micro-button download-movie-button",
-  });
-
-  Object.assign(btn.style, {
-    color: "rgba(0, 192, 48, 1)",
-    display: "flex",
-    marginTop: "6px",
-    padding: "2px 6px",
-    lineHeight: "1.2",
+    className: "download-movie-button",
   });
 
   btn.addEventListener("click", async (e) => {
@@ -170,7 +219,15 @@ function addDownloadButton() {
     const imdbId = getImdbId();
 
     const dropdown = createDropdown(titleQuery, imdbId);
-    btn.parentElement.appendChild(dropdown);
+
+    const rect = btn.getBoundingClientRect();
+    Object.assign(dropdown.style, {
+      position: "fixed",
+      top: `${rect.bottom + 2}px`,
+      left: `${rect.left}px`,
+    });
+
+    document.body.appendChild(dropdown);
 
     document.addEventListener("click", function close(e) {
       if (!dropdown.contains(e.target) && e.target !== btn) {
@@ -196,6 +253,8 @@ function addDownloadButton() {
   wrapper.appendChild(createInfoButton());
 
   footer.parentNode.insertBefore(wrapper, footer.nextSibling);
+
+  return true;
 }
 
 function createInfoButton() {
@@ -267,7 +326,7 @@ function getStatusColor(status) {
 }
 
 function formatReleaseInfo(dates) {
-  if (!dates?.hasData) return "No release date information available";
+  if (!dates?.hasData) return NO_RELEASE_DATA_MSG;
 
   const parts = [];
 
@@ -324,7 +383,10 @@ function createReleaseInfo() {
     { action: "getReleaseDates", movieTitle: title, movieYear: year },
     (response) => {
       if (!response?.success) {
-        console.error("Failed:", response?.error);
+        const infoEl = qs(".release-dates-info");
+        if (infoEl) {
+          infoEl.textContent = "No release date information available";
+        }
         return;
       }
 
