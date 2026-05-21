@@ -22,6 +22,15 @@ const DEFAULT_TRACKERS = {
   },
 };
 
+const DEFAULT_STREAMING_SOURCES = {
+  pstream: {
+    name: "P-Stream",
+    url: "https://pstream.net/browse/{query}",
+    enabled: true,
+    searchType: "titleOnly",
+  },
+};
+
 const NO_RELEASE_DATA_MSG = "No release date information available";
 
 if (typeof browser === "undefined") {
@@ -31,6 +40,8 @@ if (typeof browser === "undefined") {
 let cachedReleaseDates = null;
 let cachedMovieUrl = null;
 let trackers = {};
+let streamingSources = {};
+let watchButtonEnabled = true;
 
 const qs = (selector, parent = document) => parent.querySelector(selector);
 
@@ -54,12 +65,23 @@ const buildTrackers = (config) =>
 async function loadSettings() {
   try {
     const result = await new Promise((resolve) =>
-      browser.storage.sync.get({ trackers: DEFAULT_TRACKERS }, resolve),
+      browser.storage.sync.get(
+        {
+          trackers: DEFAULT_TRACKERS,
+          streamingSources: DEFAULT_STREAMING_SOURCES,
+          watchButtonEnabled: true,
+        },
+        resolve,
+      ),
     );
     trackers = buildTrackers(result.trackers);
+    streamingSources = buildTrackers(result.streamingSources);
+    watchButtonEnabled = result.watchButtonEnabled;
   } catch (err) {
     console.error("Error loading settings:", err);
     trackers = buildTrackers(DEFAULT_TRACKERS);
+    streamingSources = buildTrackers(DEFAULT_STREAMING_SOURCES);
+    watchButtonEnabled = true;
   }
 }
 
@@ -67,6 +89,16 @@ browser.runtime.onMessage.addListener((request) => {
   if (request.action === "updateTrackers") {
     trackers = buildTrackers(request.trackers);
     refreshDropdown();
+  }
+
+  if (request.action === "updateStreamingSources") {
+    streamingSources = buildTrackers(request.streamingSources);
+    closeDropdowns();
+  }
+
+  if (request.action === "updateWatchButton") {
+    watchButtonEnabled = request.enabled;
+    syncWatchButton();
   }
 });
 
@@ -77,12 +109,73 @@ function getImdbId() {
 }
 
 function refreshDropdown() {
-  qs(".download-dropdown")?.remove();
-  qs(".download-movie-button")?.click();
+  const dropdown = qs(".download-dropdown");
+  if (!dropdown) return;
+
+  dropdown.remove();
+
+  const { title, titleQuery, imdbId } = getMovieSearchContext();
+  const nextDropdown = createDropdown(
+    trackers,
+    { title: titleQuery, titleOnly: title, titleQuery },
+    imdbId,
+    "No sources enabled",
+    "download-dropdown",
+  );
+  const btn = qs(".download-movie-button");
+  if (!btn) return;
+
+  const rect = btn.getBoundingClientRect();
+  Object.assign(nextDropdown.style, {
+    position: "fixed",
+    top: `${rect.bottom + 2}px`,
+    left: `${rect.left}px`,
+  });
+  document.body.appendChild(nextDropdown);
+
+  document.addEventListener("click", function close(e) {
+    if (!nextDropdown.contains(e.target) && e.target !== btn) {
+      nextDropdown.remove();
+      document.removeEventListener("click", close);
+    }
+  });
 }
 
-function createDropdown(searchQuery, imdbId) {
-  const dropdown = createEl("div", { className: "download-dropdown" });
+function closeDropdowns() {
+  document.querySelectorAll(".source-dropdown").forEach((el) => el.remove());
+}
+
+function syncWatchButton() {
+  const watchBtn = qs(".watch-movie-button");
+  if (!watchBtn) return;
+
+  closeDropdowns();
+  watchBtn.hidden = !watchButtonEnabled;
+}
+
+function getMovieSearchContext() {
+  const title =
+    qs("h1.headline-1.primaryname span.name")?.textContent.trim() ?? "";
+  const year = qs(".releasedate a")?.textContent.trim() ?? "";
+  const titleQuery = `${title} ${year}`.trim().replace(/\u00A0/g, " ");
+
+  return {
+    imdbId: getImdbId(),
+    title: title.replace(/\u00A0/g, " "),
+    titleQuery,
+  };
+}
+
+function createDropdown(
+  sources,
+  searchQuery,
+  imdbId,
+  emptyMessage,
+  dropdownClass,
+) {
+  const dropdown = createEl("div", {
+    className: `source-dropdown ${dropdownClass}`,
+  });
 
   Object.assign(dropdown.style, {
     position: "absolute",
@@ -96,10 +189,10 @@ function createDropdown(searchQuery, imdbId) {
     overflow: "hidden",
   });
 
-  const enabled = Object.values(trackers).filter((t) => t.enabled);
+  const enabled = getEnabledSources(sources);
 
   if (!enabled.length) {
-    const empty = createEl("div", { textContent: "No sources enabled" });
+    const empty = createEl("div", { textContent: emptyMessage });
     Object.assign(empty.style, {
       color: "#555",
       fontSize: "12px",
@@ -110,8 +203,6 @@ function createDropdown(searchQuery, imdbId) {
   }
 
   enabled.forEach((source, i) => {
-    const query = source.searchType === "imdb" && imdbId ? imdbId : searchQuery;
-
     const item = createEl("a", {
       textContent: source.name,
       href: "#",
@@ -130,7 +221,7 @@ function createDropdown(searchQuery, imdbId) {
 
     item.addEventListener("click", (e) => {
       e.preventDefault();
-      window.open(source.url(query), "_blank", "noopener,noreferrer");
+      openSource(source, searchQuery, imdbId);
     });
 
     item.addEventListener("mouseover", () => {
@@ -146,6 +237,69 @@ function createDropdown(searchQuery, imdbId) {
   });
 
   return dropdown;
+}
+
+function getEnabledSources(sources) {
+  return Object.values(sources).filter((source) => source.enabled);
+}
+
+function getSourceQuery(source, searchQuery, imdbId) {
+  return source.searchType === "imdb" && imdbId
+    ? imdbId
+    : searchQuery[source.searchType] ?? searchQuery.titleQuery;
+}
+
+function openSource(source, searchQuery, imdbId) {
+  window.open(
+    source.url(getSourceQuery(source, searchQuery, imdbId)),
+    "_blank",
+    "noopener,noreferrer",
+  );
+}
+
+function attachDropdown(btn, getSources, emptyMessage, dropdownClass) {
+  btn.addEventListener("click", async (e) => {
+    e.preventDefault();
+
+    const existing = qs(`.${dropdownClass}`);
+    if (existing) return existing.remove();
+
+    closeDropdowns();
+
+    const sources = await getSources();
+    const { title, titleQuery, imdbId } = getMovieSearchContext();
+    const searchQuery = { title: titleQuery, titleOnly: title, titleQuery };
+    const enabledSources = getEnabledSources(sources);
+
+    if (enabledSources.length === 1) {
+      openSource(enabledSources[0], searchQuery, imdbId);
+      return;
+    }
+
+    const dropdown = createDropdown(
+      sources,
+      searchQuery,
+      imdbId,
+      emptyMessage,
+      dropdownClass,
+    );
+
+    const rect = btn.getBoundingClientRect();
+    Object.assign(dropdown.style, {
+      position: "fixed",
+      top: `${rect.bottom + 2}px`,
+      left: `${rect.left}px`,
+    });
+
+    document.body.appendChild(dropdown);
+
+    document.addEventListener("click", function close(e) {
+      if (!dropdown.contains(e.target) && e.target !== btn) {
+        dropdown.remove();
+        document.removeEventListener("click", close);
+      }
+    });
+  });
 }
 
 function injectStyles() {
@@ -178,12 +332,15 @@ function injectStyles() {
   const style = document.createElement("style");
   style.id = "download-extension-styles";
   style.textContent = `
-    .download-movie-button {
+    .download-movie-button,
+    .watch-movie-button {
       ${rules}
       color: rgba(0, 192, 48, 1);
     }
     .download-movie-button:hover,
-    .download-movie-button:active {
+    .download-movie-button:active,
+    .watch-movie-button:hover,
+    .watch-movie-button:active {
       color: rgba(0, 255, 64, 1);
       border-color: #9ab;
     }
@@ -203,39 +360,27 @@ function addDownloadButton() {
     className: "download-movie-button",
   });
 
-  btn.addEventListener("click", async (e) => {
-    e.preventDefault();
-
-    const existing = qs(".download-dropdown");
-    if (existing) return existing.remove();
-
+  attachDropdown(btn, async () => {
     await loadSettings();
+    return trackers;
+  }, "No sources enabled", "download-dropdown");
 
-    const title =
-      qs("h1.headline-1.primaryname span.name")?.textContent.trim() ?? "";
-    const year = qs(".releasedate a")?.textContent.trim() ?? "";
-    const titleQuery = `${title} ${year}`.trim().replace(/\u00A0/g, " ");
-
-    const imdbId = getImdbId();
-
-    const dropdown = createDropdown(titleQuery, imdbId);
-
-    const rect = btn.getBoundingClientRect();
-    Object.assign(dropdown.style, {
-      position: "fixed",
-      top: `${rect.bottom + 2}px`,
-      left: `${rect.left}px`,
-    });
-
-    document.body.appendChild(dropdown);
-
-    document.addEventListener("click", function close(e) {
-      if (!dropdown.contains(e.target) && e.target !== btn) {
-        dropdown.remove();
-        document.removeEventListener("click", close);
-      }
-    });
+  const watchBtn = createEl("a", {
+    textContent: "Watch",
+    href: "#",
+    className: "watch-movie-button",
+    hidden: !watchButtonEnabled,
   });
+
+  attachDropdown(
+    watchBtn,
+    async () => {
+      await loadSettings();
+      return streamingSources;
+    },
+    "No streaming services enabled",
+    "watch-dropdown",
+  );
 
   const wrapper = createEl("div", {
     className: "download-wrapper",
@@ -249,6 +394,7 @@ function addDownloadButton() {
   });
 
   wrapper.appendChild(btn);
+  wrapper.appendChild(watchBtn);
   wrapper.appendChild(createReleaseInfo());
   wrapper.appendChild(createInfoButton());
 

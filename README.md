@@ -3,6 +3,7 @@
 A browser extension that enhances Letterboxd movie pages by adding:
 
 * A **Download** button that **opens a list of trackers** to access or download the movie.
+* A **Watch** button that opens a list of streaming services for the movie.
 * **Digital & Blu-ray release dates**, displayed **to the right of the Download button** for quick reference.
 
 ## Installation
@@ -27,8 +28,8 @@ A browser extension that enhances Letterboxd movie pages by adding:
 ## Usage
 
 1. Open any **Letterboxd movie page**
-2. Find the **Download button** near the TMDB, IMDB and WIKI button
-3. Click it to fetch **download options**
+2. Find the **Download** and **Watch** buttons near the TMDB and IMDB  button
+3. Click either button to open its available options
 
 ## Screenshot
 

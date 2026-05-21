@@ -22,56 +22,164 @@ const DEFAULT_TRACKERS = {
   },
 };
 
+const DEFAULT_STREAMING_SOURCES = {
+  pstream: {
+    name: "P-Stream",
+    url: "https://pstream.net/browse/{query}",
+    enabled: true,
+    builtIn: true,
+    searchType: "titleOnly",
+  },
+};
+
+const SOURCE_CONFIGS = {
+  trackers: {
+    defaults: DEFAULT_TRACKERS,
+    listId: "tracker-list",
+    nameId: "custom-name",
+    urlId: "custom-url",
+    addId: "add-tracker",
+    errorId: "error-msg",
+    radioName: "search-type",
+    customIdPrefix: "tracker",
+    removeTitle: "Remove tracker",
+    updateAction: "updateTrackers",
+    messageKey: "trackers",
+  },
+  streamingSources: {
+    defaults: DEFAULT_STREAMING_SOURCES,
+    listId: "streaming-list",
+    nameId: "custom-streaming-name",
+    urlId: "custom-streaming-url",
+    addId: "add-streaming-source",
+    errorId: "streaming-error-msg",
+    radioName: "streaming-search-type",
+    customIdPrefix: "streaming",
+    removeTitle: "Remove streaming source",
+    updateAction: "updateStreamingSources",
+    messageKey: "streamingSources",
+  },
+};
+
 if (typeof browser === "undefined") {
   var browser = chrome;
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const trackerList = document.getElementById("tracker-list");
-  const customNameInput = document.getElementById("custom-name");
-  const customUrlInput = document.getElementById("custom-url");
-  const addBtn = document.getElementById("add-tracker");
-  const errorMsg = document.getElementById("error-msg");
+  setupTabs();
+  await setupWatchButtonSetting();
+  await setupSourceManager("trackers");
+  await setupSourceManager("streamingSources");
+});
 
-  async function loadAllTrackers() {
+function setupTabs() {
+  const tabButtons = document.querySelectorAll(".tab-btn");
+  const tabPanels = document.querySelectorAll(".tab-panel");
+
+  tabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      tabButtons.forEach((btn) => btn.classList.remove("active"));
+      tabPanels.forEach((panel) => panel.classList.remove("active"));
+
+      button.classList.add("active");
+      document.getElementById(`${button.dataset.tab}-panel`)?.classList.add("active");
+    });
+  });
+}
+
+async function setupWatchButtonSetting() {
+  const checkbox = document.getElementById("watch-button-enabled");
+  const toggle = document.getElementById("watch-button-toggle");
+
+  const result = await new Promise((resolve) => {
+    browser.storage.sync.get({ watchButtonEnabled: true }, resolve);
+  });
+
+  setWatchButtonToggle(result.watchButtonEnabled);
+
+  checkbox.addEventListener("change", async () => {
+    const enabled = checkbox.checked;
+    setWatchButtonToggle(enabled);
+
+    await new Promise((resolve) =>
+      browser.storage.sync.set({ watchButtonEnabled: enabled }, resolve),
+    );
+
+    notifyWatchButtonSetting(enabled);
+  });
+
+  function setWatchButtonToggle(enabled) {
+    checkbox.checked = enabled;
+    toggle.classList.toggle("active", enabled);
+  }
+}
+
+async function notifyWatchButtonSetting(enabled) {
+  const tabs = await browser.tabs.query({ url: "*://letterboxd.com/*" });
+  tabs.forEach((tab) => {
+    browser.tabs
+      .sendMessage(tab.id, {
+        action: "updateWatchButton",
+        enabled,
+      })
+      .catch(() => {});
+  });
+}
+
+async function setupSourceManager(storageKey) {
+  const config = SOURCE_CONFIGS[storageKey];
+  const list = document.getElementById(config.listId);
+  const nameInput = document.getElementById(config.nameId);
+  const urlInput = document.getElementById(config.urlId);
+  const addBtn = document.getElementById(config.addId);
+  const errorMsg = document.getElementById(config.errorId);
+
+  async function loadAllSources() {
     const result = await new Promise((resolve) => {
-      browser.storage.sync.get({ trackers: {} }, resolve);
+      browser.storage.sync.get({ [storageKey]: {} }, resolve);
     });
 
-    const trackers = { ...DEFAULT_TRACKERS, ...result.trackers };
+    const sources = { ...config.defaults, ...result[storageKey] };
 
-    Object.keys(DEFAULT_TRACKERS).forEach((key) => {
-      if (!trackers[key] || !trackers[key].builtIn) {
-        trackers[key] = { ...DEFAULT_TRACKERS[key] };
+    Object.keys(config.defaults).forEach((key) => {
+      if (!sources[key] || !sources[key].builtIn) {
+        sources[key] = { ...config.defaults[key] };
       }
     });
 
-    return trackers;
+    return sources;
   }
 
-  // Save all trackers
-  async function saveAllTrackers(trackers) {
+  async function saveAllSources(sources) {
     await new Promise((resolve) =>
-      browser.storage.sync.set({ trackers }, resolve),
+      browser.storage.sync.set({ [storageKey]: sources }, resolve),
     );
-    notifyContentScripts(trackers);
+    notifyContentScripts(sources);
   }
 
-  // Notify content scripts
-  async function notifyContentScripts(trackers) {
+  async function notifyContentScripts(sources) {
     const tabs = await browser.tabs.query({ url: "*://letterboxd.com/*" });
     tabs.forEach((tab) => {
       browser.tabs
         .sendMessage(tab.id, {
-          action: "updateTrackers",
-          trackers: trackers,
+          action: config.updateAction,
+          [config.messageKey]: sources,
         })
         .catch(() => {});
     });
   }
 
-  // Create tracker element
-  function createTrackerElement(id, data) {
+  function getSearchTypeLabel(searchType) {
+    return (
+      {
+        imdb: "IMDB",
+        titleOnly: "Title",
+        title: "Title + Year",
+      }[searchType] || "Title"
+    );
+  }
+
+  function createSourceElement(id, data) {
     const div = document.createElement("div");
     div.className = "tracker";
     div.dataset.source = id;
@@ -86,20 +194,19 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const typeSpan = document.createElement("span");
     typeSpan.className = "search-type";
-    typeSpan.textContent = data.searchType === "imdb" ? "IMDB" : "Title";
+    typeSpan.textContent = getSearchTypeLabel(data.searchType);
     mainDiv.appendChild(typeSpan);
 
-    // Delete button ONLY for custom trackers (not built-in)
     if (!data.builtIn) {
       const deleteBtn = document.createElement("button");
       deleteBtn.className = "delete-btn";
       deleteBtn.innerHTML = "X";
-      deleteBtn.title = "Remove tracker";
+      deleteBtn.title = config.removeTitle;
       deleteBtn.onclick = async () => {
-        const trackers = await loadAllTrackers();
-        delete trackers[id];
-        await saveAllTrackers(trackers);
-        renderTrackers(trackers);
+        const sources = await loadAllSources();
+        delete sources[id];
+        await saveAllSources(sources);
+        renderSources(sources);
       };
       mainDiv.appendChild(deleteBtn);
     }
@@ -112,9 +219,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       toggle.classList.toggle("active");
       const isActive = toggle.classList.contains("active");
 
-      const trackers = await loadAllTrackers();
-      trackers[id].enabled = isActive;
-      await saveAllTrackers(trackers);
+      const sources = await loadAllSources();
+      sources[id].enabled = isActive;
+      await saveAllSources(sources);
     });
 
     div.appendChild(mainDiv);
@@ -122,27 +229,22 @@ document.addEventListener("DOMContentLoaded", async () => {
     return div;
   }
 
-  // Render all trackers
-  function renderTrackers(trackers) {
-    // Clear list completely
-    trackerList.innerHTML = "";
+  function renderSources(sources) {
+    list.innerHTML = "";
 
-    // Render all trackers
-    Object.entries(trackers).forEach(([id, data]) => {
-      const el = createTrackerElement(id, data);
-      trackerList.appendChild(el);
+    Object.entries(sources).forEach(([id, data]) => {
+      const el = createSourceElement(id, data);
+      list.appendChild(el);
     });
   }
 
-  // Add custom tracker
   addBtn.addEventListener("click", async () => {
-    const name = customNameInput.value.trim();
-    const url = customUrlInput.value.trim();
+    const name = nameInput.value.trim();
+    const url = urlInput.value.trim();
     const searchType = document.querySelector(
-      'input[name="search-type"]:checked',
+      `input[name="${config.radioName}"]:checked`,
     ).value;
 
-    // Validation
     if (!name || !url) {
       showError("Please fill in both fields");
       return;
@@ -162,26 +264,24 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     hideError();
 
-    const trackers = await loadAllTrackers();
-    const id = "tracker_" + Date.now();
+    const sources = await loadAllSources();
+    const id = `${config.customIdPrefix}_${Date.now()}`;
 
-    trackers[id] = {
-      name: name,
-      url: url,
+    sources[id] = {
+      name,
+      url,
       enabled: true,
       builtIn: false,
-      searchType: searchType,
+      searchType,
     };
 
-    await saveAllTrackers(trackers);
+    await saveAllSources(sources);
 
-    // Clear inputs
-    customNameInput.value = "";
-    customUrlInput.value = "";
-    document.querySelector('input[value="title"]').checked = true;
+    nameInput.value = "";
+    urlInput.value = "";
+    document.querySelector(`input[name="${config.radioName}"]`).checked = true;
 
-    // Re-render immediately to show all trackers including new one
-    renderTrackers(trackers);
+    renderSources(sources);
   });
 
   function showError(msg) {
@@ -193,12 +293,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     errorMsg.classList.remove("show");
   }
 
-  // Clear error on input
-  [customNameInput, customUrlInput].forEach((input) => {
+  [nameInput, urlInput].forEach((input) => {
     input.addEventListener("input", hideError);
   });
 
-  // Initial render
-  const trackers = await loadAllTrackers();
-  renderTrackers(trackers);
-});
+  renderSources(await loadAllSources());
+}
