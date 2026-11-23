@@ -3,3 +3,4 @@ letterboxd-dl-*.zip
 node_modules/
 # Generated from manifest.chrome.json by the build scripts
 extension/manifest.json
+*.xpi
