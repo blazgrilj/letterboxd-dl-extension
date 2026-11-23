@@ -76,35 +76,3 @@ If a page has no IMDb/TMDB link, sources that need that ID are shown greyed out.
 ## Screenshot
 
 ![Screenshot](screenshot.png)
-
-## Building
-
-Packages are written to the repo root:
-
-| File | For |
-|---|---|
-| `letterboxd-dl-<version>.zip` | Chrome, Edge, Brave, Opera |
-| `letterboxd-dl-<version>-firefox.zip` | Firefox |
-| `letterboxd-dl-<version>-safari.zip` | Safari (still needs Xcode, see below) |
-
-Build them with either script:
-
-* **Windows, no Node.js needed:** `powershell -ExecutionPolicy Bypass -File build.ps1`
-* **Node.js:** `npm install adm-zip` once, then `node build.js`
-
-For Safari, run `bash build-safari.sh --build` on a Mac with Xcode to get the installable app.
-
-Bump `version` in all three `extension/manifest.*.json` files before a release. `build.ps1` checks that they match.
-
-### Automatic releases (GitHub Actions)
-
-Every push builds all packages, including the Safari app on a macOS runner. You can download them from the run's **Artifacts** on the Actions tab.
-
-To publish a release, bump the version, commit, then push a matching tag:
-
-```
-git tag v2.1.0
-git push origin v2.1.0
-```
-
-The workflow creates a GitHub Release with the Chrome, Firefox and Safari zips and the Safari app (`-safari-app.zip`) attached. The Safari app is unsigned. After unzipping, run `xattr -cr "Letterboxd DL.app"` (or right-click → Open) so macOS lets it start, then enable **Develop → Allow Unsigned Extensions** in Safari.
