@@ -14,7 +14,7 @@ const STATUS_COLORS = {
 };
 
 let state = { settings: { ...LBDL.DEFAULT_SETTINGS }, sources: {} };
-let releaseInfo = null; // null while loading, then { dates, url }
+let releaseInfo = null; // null while loading, then { dates, url, match }
 let openMenu = null; // { el, category, button }
 let injected = false;
 
@@ -118,14 +118,28 @@ function injectStyles() {
     .lbdl-group.has-default a.lbdl-btn-arrow {
       border-top-left-radius: 0;
       border-bottom-left-radius: 0;
-      border-left-width: 0;
+      /* Overlap the shared 1px border; the hovered half is drawn on top,
+         so its whole outline lights up. */
+      margin-left: -1px;
       padding-left: 4px;
       padding-right: 4px;
+    }
+    .lbdl-group a.lbdl-btn {
+      position: relative;
+    }
+    .lbdl-group a.lbdl-btn:hover,
+    .lbdl-group a.lbdl-btn:focus-visible,
+    .lbdl-group a.lbdl-btn[aria-expanded="true"] {
+      z-index: 1;
     }
     .lbdl-release {
       font-size: 12px;
       color: #8f8f8f;
       white-space: nowrap;
+    }
+    .lbdl-info-wrap {
+      position: relative;
+      display: inline-flex;
     }
     a.lbdl-info {
       font-size: 14px;
@@ -133,8 +147,38 @@ function injectStyles() {
       text-decoration: none;
       line-height: 1;
     }
-    a.lbdl-info:hover {
+    a.lbdl-info:hover,
+    a.lbdl-info:focus-visible {
       color: #fff;
+    }
+    .lbdl-tip {
+      display: none;
+      position: absolute;
+      right: -8px;
+      bottom: calc(100% + 8px);
+      z-index: 10000;
+      padding: 8px 10px;
+      background: #141414;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      color: #9ab;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .lbdl-info-wrap:hover .lbdl-tip,
+    .lbdl-info-wrap:focus-within .lbdl-tip,
+    .lbdl-tip.is-open {
+      display: block;
+    }
+    .lbdl-tip strong {
+      color: #fff;
+      font-weight: 600;
+    }
+    .lbdl-tip .lbdl-tip-muted {
+      color: #678;
     }
     .lbdl-dropdown {
       position: absolute;
@@ -238,14 +282,64 @@ function openDefaultSource(category) {
 }
 
 function createInfoButton() {
-  return createEl("a", {
+  const wrap = createEl("span", { className: "lbdl-info-wrap" });
+  const link = createEl("a", {
     textContent: "🛈",
     href: releaseInfo?.url ?? "https://www.dvdsreleasedates.com",
     target: "_blank",
     rel: "noopener noreferrer",
-    title: "Source: dvdsreleasedates.com",
     className: "lbdl-info",
   });
+  const tip = createEl("span", { className: "lbdl-tip" });
+  tip.setAttribute("role", "tooltip");
+  tip.id = "lbdl-release-tip";
+  link.setAttribute("aria-describedby", tip.id);
+
+  wrap.append(link, tip);
+  renderInfoTip(tip);
+  return wrap;
+}
+
+const MATCH_DESCRIPTIONS = {
+  imdb: "Matched by IMDb ID",
+  year: "Matched by title and year",
+  nearYear: "Matched by title (year ±1)",
+  first: "Matched by title only",
+};
+
+/** Fills the ⓘ tooltip: which film the release dates belong to. */
+function renderInfoTip(tip = qs(".lbdl-tip")) {
+  if (!tip) return;
+
+  const line = (text, muted = false) => {
+    const el = createEl("div", { textContent: text });
+    if (muted) el.className = "lbdl-tip-muted";
+    return el;
+  };
+  const source = line("Source: dvdsreleasedates.com", true);
+  const match = releaseInfo?.match;
+
+  if (!releaseInfo) {
+    tip.replaceChildren(line("Looking up release dates…"), source);
+  } else if (match) {
+    const film = createEl("div");
+    film.append(
+      "Dates for ",
+      createEl("strong", {
+        textContent: match.year ? `${match.title} (${match.year})` : match.title,
+      }),
+    );
+    tip.replaceChildren(
+      film,
+      line(MATCH_DESCRIPTIONS[match.by] ?? "Matched by title", true),
+      source,
+    );
+  } else if (releaseInfo.url) {
+    // Cached before match info existed.
+    tip.replaceChildren(line("Release dates found"), source);
+  } else {
+    tip.replaceChildren(line("No matching film found"), source);
+  }
 }
 
 function createReleaseInfo() {
@@ -510,6 +604,7 @@ function renderReleaseInfo() {
 
   const infoBtn = qs(".lbdl-info");
   if (infoBtn && releaseInfo.url) infoBtn.href = releaseInfo.url;
+  renderInfoTip();
 }
 
 async function cacheReleaseInfo(key, data, ttl) {
@@ -529,7 +624,8 @@ async function loadReleaseDates(movie) {
     return;
   }
 
-  const key = `${LBDL.RELEASE_CACHE_PREFIX}${
+  // "v3": entries cached before the matching fixes may name the wrong film.
+  const key = `${LBDL.RELEASE_CACHE_PREFIX}v3:${
     movie.slug || `${movie.title}|${movie.year}`
   }`;
 
@@ -550,6 +646,7 @@ async function loadReleaseDates(movie) {
       action: "getReleaseDates",
       movieTitle: movie.title,
       movieYear: movie.year,
+      imdbId: movie.imdbId,
     });
   } catch (err) {
     console.warn("[Letterboxd DL] Release date lookup failed:", err);
@@ -557,7 +654,7 @@ async function loadReleaseDates(movie) {
 
   if (response?.success) {
     const dates = parseReleaseDates(response.html);
-    releaseInfo = { dates, url: response.url };
+    releaseInfo = { dates, url: response.url, match: response.match ?? null };
 
     const complete =
       dates.hasData &&

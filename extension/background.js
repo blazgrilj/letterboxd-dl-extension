@@ -72,16 +72,31 @@ function notFoundError(message) {
   return err;
 }
 
-async function handleGetReleaseDates({ movieTitle, movieYear }) {
+async function handleGetReleaseDates({ movieTitle, movieYear, imdbId }) {
   if (!movieTitle) throw notFoundError("Missing movie title");
 
-  const movieUrl = await searchMovie(movieTitle, movieYear);
-  const html = await fetchHtml(movieUrl);
+  const match = await searchMovie(movieTitle, movieYear, imdbId);
+  const url = toAbsoluteUrl(match.url);
+  // A search that redirected straight to the film page already has its HTML.
+  const html = match.html ?? (await fetchHtml(url));
 
-  return { url: movieUrl, html };
+  return {
+    url,
+    html,
+    // Which film the dates belong to, shown in the ⓘ tooltip.
+    match: {
+      title: match.title || movieTitle,
+      year: match.year,
+      by: match.by,
+    },
+  };
 }
 
-async function searchMovie(title, year) {
+/**
+ * Picks the search result for this film. Returns the result plus `by`:
+ * "imdb" (same IMDb ID), "year" (same year), "nearYear" (±1 year) or "first".
+ */
+async function searchMovie(title, year, imdbId) {
   const response = await fetch(RELEASE_SEARCH_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -93,20 +108,73 @@ async function searchMovie(title, year) {
     throw new Error(`Search failed (${response.status})`);
   }
 
-  const results = extractMovieResults(await response.text());
+  const searchHtml = await response.text();
+
+  // With one strong hit the site skips the result list and redirects to the
+  // film page. Its sidebar lists other films, so read only the page's own film.
+  if (/\/movies\//.test(response.url)) {
+    const film = parseFilmPage(searchHtml, response.url);
+    const by = checkFilmPage(film, year, imdbId);
+    if (!by) throw notFoundError(`Redirected to a different film: ${film.title} (${film.year})`);
+    return { ...film, by, html: searchHtml };
+  }
+
+  const results = extractMovieResults(searchHtml);
   if (!results.length) throw notFoundError("No movie link found");
 
-  if (!year) return toAbsoluteUrl(results[0].url);
+  // An IMDb ID match is exact.
+  if (imdbId) {
+    const byImdb = results.find((r) => r.imdbId === imdbId);
+    if (byImdb) return { ...byImdb, by: "imdb" };
+  }
+
+  // Never fall back to a result that is a known, different film.
+  const candidates = imdbId
+    ? results.filter((r) => !r.imdbId || r.imdbId === imdbId)
+    : results;
+
+  if (!year) {
+    if (candidates.length) return { ...candidates[0], by: "first" };
+    throw notFoundError(`No result for ${title}`);
+  }
 
   // Prefer an exact year match. Festival vs. theatrical years often differ by
   // one, so allow ±1 as a fallback, but never show an unrelated film's dates.
-  const exact = results.find((r) => r.year === year);
-  if (exact) return toAbsoluteUrl(exact.url);
+  const exact = candidates.find((r) => r.year === year);
+  if (exact) return { ...exact, by: "year" };
 
-  const near = results.find((r) => Math.abs(Number(r.year) - Number(year)) <= 1);
-  if (near) return toAbsoluteUrl(near.url);
+  const near = candidates.find((r) => Math.abs(Number(r.year) - Number(year)) <= 1);
+  if (near) return { ...near, by: "nearYear" };
 
   throw notFoundError(`No result for ${title} (${year})`);
+}
+
+/** Reads the film's own title, year and IMDb ID from a dvdsreleasedates film page. */
+function parseFilmPage(html, pageUrl) {
+  const heading = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? "";
+  const name =
+    heading.match(/itemprop=["']name["'][^>]*>([^<]+)</i)?.[1] ??
+    heading.replace(/<[^>]+>/g, " ").replace(/\(\s*\d{4}\s*\)/, "");
+  const canonical = html.match(
+    /<link[^>]+rel=["']canonical["'][^>]+href=["']([^"']+)["']/i,
+  )?.[1];
+
+  return {
+    url: canonical || pageUrl,
+    title: LBDL.decodeEntities(name).replace(/\s+/g, " ").trim() || null,
+    // Newer pages link the year: "(<a …>2024</a>)".
+    year: heading.replace(/<[^>]+>/g, " ").match(/\(\s*(\d{4})\s*\)/)?.[1] ?? null,
+    // The film's own IMDb link comes first; the sidebar's films come later.
+    imdbId: html.match(/imdb\.com\/title\/(tt\d+)/i)?.[1] ?? null,
+  };
+}
+
+/** How a redirected-to film page matches this film, or null if it's a different film. */
+function checkFilmPage(film, year, imdbId) {
+  if (imdbId && film.imdbId) return film.imdbId === imdbId ? "imdb" : null;
+  if (!year || !film.year) return "first";
+  if (film.year === year) return "year";
+  return Math.abs(Number(film.year) - Number(year)) <= 1 ? "nearYear" : null;
 }
 
 async function fetchHtml(url) {
@@ -117,12 +185,25 @@ async function fetchHtml(url) {
 
 function extractMovieResults(html) {
   const regex =
-    /<a[^>]+href=["']([^"']*\/movies\/[^"']+)["'][^>]*>[\s\S]*?<img[^>]+src=["'][^"']*?(\d{4})\.jpg["'][^>]*>/gi;
+    // The poster <img> must sit directly inside the link. A looser pattern let a
+    // result's title link pair up with the *next* result's poster and year.
+    /<a[^>]+href=["']([^"']*\/movies\/[^"']+)["'][^>]*>\s*<img[^>]+src=["'][^"']*?(\d{4})\.jpg["'][^>]*>/gi;
 
-  return [...html.matchAll(regex)].map((match) => ({
-    url: match[1],
-    year: match[2],
-  }));
+  const matches = [...html.matchAll(regex)];
+
+  return matches.map((match, i) => {
+    // Each result is: poster link, then a title link, then an IMDb link.
+    const end = matches[i + 1]?.index ?? match.index + match[0].length + 1500;
+    const rest = html.slice(match.index + match[0].length, end);
+    const title = rest.match(/<a[^>]+\/movies\/[^>]*>([^<]+)<\/a>/i)?.[1];
+
+    return {
+      url: match[1],
+      year: match[2],
+      title: title ? LBDL.decodeEntities(title).trim() : null,
+      imdbId: rest.match(/imdb\.com\/title\/(tt\d+)/i)?.[1] ?? null,
+    };
+  });
 }
 
 function toAbsoluteUrl(url) {
@@ -206,21 +287,6 @@ async function buildMenus() {
           contexts: ["link"],
         });
       }
-
-      if (list.length > 1) {
-        await createMenu({
-          id: `${groupId}|sep`,
-          parentId: groupId,
-          type: "separator",
-          contexts: ["link"],
-        });
-        await createMenu({
-          id: `${groupId}|*`,
-          parentId: groupId,
-          title: "Open all",
-          contexts: ["link"],
-        });
-      }
     }
   } catch (err) {
     console.error("[Letterboxd DL] Failed to build context menu:", err);
@@ -279,13 +345,11 @@ async function handleMenuClick(categoryKey, sourceId, linkUrl, tab) {
     getFilmInfo(slug),
   ]);
 
-  const enabled = LBDL.sortedSources(sources[categoryKey]).filter((s) => s.enabled);
-  const targets = sourceId === "*" ? enabled : enabled.filter((s) => s.id === sourceId);
-  const urls = targets
-    .map((source) => LBDL.buildSourceUrl(source, movie, settings, categoryKey).url)
-    .filter(Boolean);
+  const source = sources[categoryKey]?.[sourceId];
+  if (!source?.enabled) return;
 
-  await openTabs(urls, { active: sourceId !== "*", tab });
+  const { url } = LBDL.buildSourceUrl(source, movie, settings, categoryKey);
+  if (url) await openTabs([url], { active: true, tab });
 }
 
 browser.contextMenus.onClicked.addListener((info, tab) => {

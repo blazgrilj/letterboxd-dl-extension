@@ -376,6 +376,7 @@ var LBDL = (() => {
     describeMissing,
     validateTemplate,
     splitTitleYear,
+    decodeEntities,
     parseFilmHtml,
     titleFromSlug,
   };
