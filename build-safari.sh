@@ -48,10 +48,45 @@ echo "Xcode project: $PROJECT"
 if [[ "${1:-}" == "--build" ]]; then
   SCHEME="$(xcodebuild -list -project "$PROJECT" 2>/dev/null \
     | awk '/Schemes:/ {found=1; next} found && NF {sub(/^[ \t]+/, ""); print; exit}')"
-  xcodebuild -project "$PROJECT" -scheme "${SCHEME:-$APP_NAME}" -configuration Release \
-    -derivedDataPath "$PROJECT_DIR/DerivedData" \
-    CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO build
-  APP="$(find "$PROJECT_DIR/DerivedData" -name "$APP_NAME.app" -type d | head -n 1)"
+  echo "Building scheme: ${SCHEME:-$APP_NAME}"
+
+  # Build without signing (no Apple developer team needed), then ad-hoc sign below.
+  LOG="$PROJECT_DIR/xcodebuild.log"
+  if ! xcodebuild -project "$PROJECT" -scheme "${SCHEME:-$APP_NAME}" -configuration Release \
+      -derivedDataPath "$PROJECT_DIR/DerivedData" \
+      CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+      build >"$LOG" 2>&1; then
+    echo "xcodebuild failed. Errors:" >&2
+    grep -E "error:|BUILD FAILED" "$LOG" | head -20 | while IFS= read -r line; do
+      if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::error::$line"; else echo "$line" >&2; fi
+    done
+    tail -n 40 "$LOG" >&2
+    exit 1
+  fi
+
+  APP="$(find "$PROJECT_DIR/DerivedData" -name "$APP_NAME.app" -type d -path '*/Release/*' | head -n 1)"
+  if [[ -z "$APP" ]]; then
+    echo "Built app not found" >&2
+    exit 1
+  fi
+
+  # Ad-hoc sign (Apple Silicon refuses to run unsigned code), keeping the sandbox
+  # entitlements that Safari requires for web extensions.
+  find_entitlements() {
+    find "$PROJECT_DIR" -path "$PROJECT_DIR/DerivedData" -prune -o -name '*.entitlements' "$@" -print | head -n 1
+  }
+  sign() {
+    if [[ -n "$2" ]]; then
+      codesign --force --sign - --entitlements "$2" "$1"
+    else
+      codesign --force --sign - "$1"
+    fi
+  }
+  APPEX="$(find "$APP/Contents/PlugIns" -maxdepth 1 -name '*.appex' | head -n 1)"
+  [[ -n "$APPEX" ]] && sign "$APPEX" "$(find_entitlements -path '*Extension*')"
+  sign "$APP" "$(find_entitlements ! -path '*Extension*')"
+  codesign --verify --deep --strict "$APP"
+
   echo "Built app: $APP"
   echo "Open it once, then enable the extension in Safari → Settings → Extensions."
   echo "Unsigned builds need Safari → Develop → Allow Unsigned Extensions."
