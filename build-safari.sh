@@ -45,6 +45,24 @@ xcrun safari-web-extension-converter "$STAGING" \
 PROJECT="$(find "$PROJECT_DIR" -maxdepth 3 -name '*.xcodeproj' | head -n 1)"
 echo "Xcode project: $PROJECT"
 
+# The extension's bundle ID must start with the app's, but the converter doesn't
+# always generate them that way. Set both explicitly: <id> and <id>.Extension.
+PBXPROJ="$PROJECT/project.pbxproj"
+EXT_BUNDLE_ID="$BUNDLE_ID.Extension"
+echo "Bundle IDs from the converter:"
+grep -o 'PRODUCT_BUNDLE_IDENTIFIER = [^;]*;' "$PBXPROJ" | sort -u | while IFS= read -r line; do
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then echo "::notice::converter $line"; else echo "  $line"; fi
+done
+sed -i '' -E \
+  -e "/PRODUCT_BUNDLE_IDENTIFIER = [^;]*[Ee]xtension[^;]*;/s/PRODUCT_BUNDLE_IDENTIFIER = [^;]*;/PRODUCT_BUNDLE_IDENTIFIER = \"$EXT_BUNDLE_ID\";/" \
+  -e "/PRODUCT_BUNDLE_IDENTIFIER = [^;]*[Ee]xtension[^;]*;/!s/PRODUCT_BUNDLE_IDENTIFIER = [^;]*;/PRODUCT_BUNDLE_IDENTIFIER = \"$BUNDLE_ID\";/" \
+  "$PBXPROJ"
+# The app looks its extension up by ID to show whether it's enabled.
+find "$PROJECT_DIR" -name '*.swift' -exec \
+  sed -i '' -E "s/(extensionBundleIdentifier = )\"[^\"]*\"/\1\"$EXT_BUNDLE_ID\"/" {} +
+echo "Bundle IDs now:"
+grep -o 'PRODUCT_BUNDLE_IDENTIFIER = [^;]*;' "$PBXPROJ" | sort -u | sed 's/^/  /'
+
 if [[ "${1:-}" == "--build" ]]; then
   SCHEME="$(xcodebuild -list -project "$PROJECT" 2>/dev/null \
     | awk '/Schemes:/ {found=1; next} found && NF {sub(/^[ \t]+/, ""); print; exit}')"
