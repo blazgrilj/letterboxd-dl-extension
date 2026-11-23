@@ -1,47 +1,22 @@
-const DEFAULT_TRACKERS = {
-  "1337x": {
-    name: "1337x",
-    url: "https://1337x.to/search/{query}/1/",
-    enabled: true,
-    builtIn: true,
-    searchType: "title",
-  },
-  rarbg: {
-    name: "The RARBG",
-    url: "https://therarbg.to/get-posts/keywords:{query}/",
-    enabled: true,
-    builtIn: true,
-    searchType: "imdb",
-  },
-  piratebay: {
-    name: "The Pirate Bay",
-    url: "https://thepiratebay.org/search.php?q={query}&all=on&search=Pirate+Search&page=0&orderby=",
-    enabled: true,
-    builtIn: true,
-    searchType: "title",
-  },
-};
-
-const DEFAULT_STREAMING_SOURCES = {
-  pstream: {
-    name: "P-Stream",
-    url: "https://pstream.net/browse/{query}",
-    enabled: true,
-    searchType: "titleOnly",
-  },
-};
+// Depends on defaults.js (loaded first via the manifest), which provides `LBDL` and `browser`.
 
 const NO_RELEASE_DATA_MSG = "No release date information available";
+const DAY_MS = 24 * 60 * 60 * 1000;
+const RELEASE_CACHE_TTL = {
+  complete: 30 * DAY_MS, // every known date is in the past
+  pending: DAY_MS, // upcoming / not announced yet
+  notFound: 3 * DAY_MS,
+};
+const STATUS_COLORS = {
+  upcoming: "#e5533d",
+  released: "#4caf50",
+  unknown: "#8f8f8f",
+};
 
-if (typeof browser === "undefined") {
-  var browser = chrome;
-}
-
-let cachedReleaseDates = null;
-let cachedMovieUrl = null;
-let trackers = {};
-let streamingSources = {};
-let watchButtonEnabled = true;
+let state = { settings: { ...LBDL.DEFAULT_SETTINGS }, sources: {} };
+let releaseInfo = null; // null while loading, then { dates, url }
+let openMenu = null; // { el, category, button }
+let injected = false;
 
 const qs = (selector, parent = document) => parent.querySelector(selector);
 
@@ -51,381 +26,431 @@ const createEl = (tag, options = {}) => {
   return el;
 };
 
-const encodeUrlTemplate = (template) => (query) =>
-  template.replace("{query}", encodeURIComponent(query));
+async function refreshState() {
+  state = await LBDL.loadAll();
+}
 
-const buildTrackers = (config) =>
-  Object.fromEntries(
-    Object.entries(config).map(([id, data]) => [
-      id,
-      { ...data, url: encodeUrlTemplate(data.url) },
-    ]),
+/* ------------------------------------------------------------------ movie */
+
+function getMovie() {
+  const og = LBDL.splitTitleYear(
+    qs('meta[property="og:title"]')?.content ?? "",
   );
+  const title = (
+    qs("h1.headline-1.primaryname span.name")?.textContent ?? og.title
+  )
+    .replace(/ /g, " ")
+    .trim();
+  const year = (qs(".releasedate a")?.textContent ?? og.year).trim();
 
-async function loadSettings() {
-  try {
-    const result = await new Promise((resolve) =>
-      browser.storage.sync.get(
-        {
-          trackers: DEFAULT_TRACKERS,
-          streamingSources: DEFAULT_STREAMING_SOURCES,
-          watchButtonEnabled: true,
-        },
-        resolve,
-      ),
-    );
-    trackers = buildTrackers(result.trackers);
-    streamingSources = buildTrackers(result.streamingSources);
-    watchButtonEnabled = result.watchButtonEnabled;
-  } catch (err) {
-    console.error("Error loading settings:", err);
-    trackers = buildTrackers(DEFAULT_TRACKERS);
-    streamingSources = buildTrackers(DEFAULT_STREAMING_SOURCES);
-    watchButtonEnabled = true;
-  }
+  const imdbId =
+    qs('a[href*="imdb.com/title/tt"]')?.href.match(/tt\d+/)?.[0] ?? null;
+  const tmdbId =
+    qs('a[href*="themoviedb.org/movie/"]')?.href.match(/movie\/(\d+)/)?.[1] ??
+    document.body?.dataset.tmdbId ??
+    null;
+  const slug = location.pathname.match(/\/film\/([^/]+)/)?.[1] ?? null;
+
+  return { title, year, imdbId, tmdbId, slug };
 }
 
-browser.runtime.onMessage.addListener((request) => {
-  if (request.action === "updateTrackers") {
-    trackers = buildTrackers(request.trackers);
-    refreshDropdown();
-  }
-
-  if (request.action === "updateStreamingSources") {
-    streamingSources = buildTrackers(request.streamingSources);
-    closeDropdowns();
-  }
-
-  if (request.action === "updateWatchButton") {
-    watchButtonEnabled = request.enabled;
-    syncWatchButton();
-  }
-});
-
-function getImdbId() {
-  const link = qs('a[href*="imdb.com/title/tt"]');
-  const match = link?.href.match(/tt\d+/);
-  return match?.[0] ?? null;
-}
-
-function refreshDropdown() {
-  const dropdown = qs(".download-dropdown");
-  if (!dropdown) return;
-
-  dropdown.remove();
-
-  const { title, titleQuery, imdbId } = getMovieSearchContext();
-  const nextDropdown = createDropdown(
-    trackers,
-    { title: titleQuery, titleOnly: title, titleQuery },
-    imdbId,
-    "No sources enabled",
-    "download-dropdown",
-  );
-  const btn = qs(".download-movie-button");
-  if (!btn) return;
-
-  const rect = btn.getBoundingClientRect();
-  Object.assign(nextDropdown.style, {
-    position: "fixed",
-    top: `${rect.bottom + 2}px`,
-    left: `${rect.left}px`,
-  });
-  document.body.appendChild(nextDropdown);
-
-  document.addEventListener("click", function close(e) {
-    if (!nextDropdown.contains(e.target) && e.target !== btn) {
-      nextDropdown.remove();
-      document.removeEventListener("click", close);
-    }
-  });
-}
-
-function closeDropdowns() {
-  document.querySelectorAll(".source-dropdown").forEach((el) => el.remove());
-}
-
-function syncWatchButton() {
-  const watchBtn = qs(".watch-movie-button");
-  if (!watchBtn) return;
-
-  closeDropdowns();
-  watchBtn.hidden = !watchButtonEnabled;
-}
-
-function getMovieSearchContext() {
-  const title =
-    qs("h1.headline-1.primaryname span.name")?.textContent.trim() ?? "";
-  const year = qs(".releasedate a")?.textContent.trim() ?? "";
-  const titleQuery = `${title} ${year}`.trim().replace(/\u00A0/g, " ");
-
-  return {
-    imdbId: getImdbId(),
-    title: title.replace(/\u00A0/g, " "),
-    titleQuery,
-  };
-}
-
-function createDropdown(
-  sources,
-  searchQuery,
-  imdbId,
-  emptyMessage,
-  dropdownClass,
-) {
-  const dropdown = createEl("div", {
-    className: `source-dropdown ${dropdownClass}`,
-  });
-
-  Object.assign(dropdown.style, {
-    position: "absolute",
-    background: "#141414",
-    border: "1px solid #2a2a2a",
-    borderRadius: "6px",
-    marginTop: "4px",
-    zIndex: "9999",
-    minWidth: "160px",
-    boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
-    overflow: "hidden",
-  });
-
-  const enabled = getEnabledSources(sources);
-
-  if (!enabled.length) {
-    const empty = createEl("div", { textContent: emptyMessage });
-    Object.assign(empty.style, {
-      color: "#555",
-      fontSize: "12px",
-      padding: "10px 12px",
-    });
-    dropdown.appendChild(empty);
-    return dropdown;
-  }
-
-  enabled.forEach((source, i) => {
-    const item = createEl("a", {
-      textContent: source.name,
-      href: "#",
-    });
-
-    Object.assign(item.style, {
-      display: "block",
-      padding: "8px 12px",
-      color: "#9ab",
-      textDecoration: "none",
-      fontSize: "12px",
-      cursor: "pointer",
-      borderTop: i === 0 ? "none" : "1px solid #1e1e1e",
-      transition: "background 0.1s, color 0.1s",
-    });
-
-    item.addEventListener("click", (e) => {
-      e.preventDefault();
-      openSource(source, searchQuery, imdbId);
-    });
-
-    item.addEventListener("mouseover", () => {
-      item.style.background = "#1e1e1e";
-      item.style.color = "#fff";
-    });
-    item.addEventListener("mouseout", () => {
-      item.style.background = "transparent";
-      item.style.color = "#9ab";
-    });
-
-    dropdown.appendChild(item);
-  });
-
-  return dropdown;
-}
-
-function getEnabledSources(sources) {
-  return Object.values(sources).filter((source) => source.enabled);
-}
-
-function getSourceQuery(source, searchQuery, imdbId) {
-  return source.searchType === "imdb" && imdbId
-    ? imdbId
-    : searchQuery[source.searchType] ?? searchQuery.titleQuery;
-}
-
-function openSource(source, searchQuery, imdbId) {
-  window.open(
-    source.url(getSourceQuery(source, searchQuery, imdbId)),
-    "_blank",
-    "noopener,noreferrer",
-  );
-}
-
-function attachDropdown(btn, getSources, emptyMessage, dropdownClass) {
-  btn.addEventListener("click", async (e) => {
-    e.preventDefault();
-
-    const existing = qs(`.${dropdownClass}`);
-    if (existing) return existing.remove();
-
-    closeDropdowns();
-
-    const sources = await getSources();
-    const { title, titleQuery, imdbId } = getMovieSearchContext();
-    const searchQuery = { title: titleQuery, titleOnly: title, titleQuery };
-    const enabledSources = getEnabledSources(sources);
-
-    if (enabledSources.length === 1) {
-      openSource(enabledSources[0], searchQuery, imdbId);
-      return;
-    }
-
-    const dropdown = createDropdown(
-      sources,
-      searchQuery,
-      imdbId,
-      emptyMessage,
-      dropdownClass,
-    );
-
-    const rect = btn.getBoundingClientRect();
-    Object.assign(dropdown.style, {
-      position: "fixed",
-      top: `${rect.bottom + 2}px`,
-      left: `${rect.left}px`,
-    });
-
-    document.body.appendChild(dropdown);
-
-    document.addEventListener("click", function close(e) {
-      if (!dropdown.contains(e.target) && e.target !== btn) {
-        dropdown.remove();
-        document.removeEventListener("click", close);
-      }
-    });
-  });
-}
+/* ----------------------------------------------------------------- styles */
 
 function injectStyles() {
-  if (qs("#download-extension-styles")) return;
+  if (qs("#lbdl-styles")) return;
 
   const reference = qs(".micro-button");
-  if (!reference) return;
+  const copied = reference
+    ? (() => {
+        const computed = window.getComputedStyle(reference);
+        return [
+          "border",
+          "border-radius",
+          "font-size",
+          "font-weight",
+          "line-height",
+          "text-decoration",
+          "cursor",
+          "display",
+          "align-items",
+          "padding",
+          "font-family",
+          "letter-spacing",
+          "text-transform",
+        ]
+          .map((p) => `${p}: ${computed.getPropertyValue(p)};`)
+          .join("\n");
+      })()
+    : "";
 
-  const computed = window.getComputedStyle(reference);
-  const props = [
-    "border",
-    "border-radius",
-    "font-size",
-    "font-weight",
-    "line-height",
-    "text-decoration",
-    "cursor",
-    "display",
-    "align-items",
-    "padding",
-    "font-family",
-    "letter-spacing",
-    "text-transform",
-  ];
-
-  const rules = props
-    .map((p) => `${p}: ${computed.getPropertyValue(p)};`)
-    .join("\n");
-
-  const style = document.createElement("style");
-  style.id = "download-extension-styles";
+  const style = createEl("style", { id: "lbdl-styles" });
   style.textContent = `
-    .download-movie-button,
-    .watch-movie-button {
-      ${rules}
+    .lbdl-wrapper {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    a.lbdl-btn {
+      ${copied}
       color: rgba(0, 192, 48, 1);
     }
-    .download-movie-button:hover,
-    .download-movie-button:active,
-    .watch-movie-button:hover,
-    .watch-movie-button:active {
+    a.lbdl-btn:hover,
+    a.lbdl-btn:active,
+    a.lbdl-btn:focus-visible,
+    a.lbdl-btn[aria-expanded="true"] {
       color: rgba(0, 255, 64, 1);
       border-color: #9ab;
+    }
+    a.lbdl-btn[hidden],
+    .lbdl-group[hidden] {
+      display: none !important;
+    }
+    .lbdl-group {
+      display: inline-flex;
+      align-items: stretch;
+    }
+    .lbdl-group.has-default a.lbdl-btn-main {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+    .lbdl-group.has-default a.lbdl-btn-arrow {
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+      border-left-width: 0;
+      padding-left: 4px;
+      padding-right: 4px;
+    }
+    .lbdl-release {
+      font-size: 12px;
+      color: #8f8f8f;
+      white-space: nowrap;
+    }
+    a.lbdl-info {
+      font-size: 14px;
+      color: #8f8f8f;
+      text-decoration: none;
+      line-height: 1;
+    }
+    a.lbdl-info:hover {
+      color: #fff;
+    }
+    .lbdl-dropdown {
+      position: absolute;
+      z-index: 9999;
+      min-width: 180px;
+      background: #141414;
+      border: 1px solid #2a2a2a;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+      font-size: 12px;
+    }
+    .lbdl-dropdown .lbdl-item {
+      display: block;
+      padding: 8px 12px;
+      color: #9ab;
+      text-decoration: none;
+      cursor: pointer;
+      border-top: 1px solid #1e1e1e;
+      transition: background 0.1s, color 0.1s;
+    }
+    .lbdl-dropdown .lbdl-item:first-child {
+      border-top: none;
+    }
+    .lbdl-dropdown a.lbdl-item:hover,
+    .lbdl-dropdown a.lbdl-item:focus {
+      background: #1e1e1e;
+      color: #fff;
+      outline: none;
+    }
+    .lbdl-dropdown .lbdl-item.is-disabled {
+      color: #555;
+      cursor: not-allowed;
+    }
+    .lbdl-dropdown .lbdl-empty {
+      padding: 10px 12px;
+      color: #555;
     }
   `;
   document.head.appendChild(style);
 }
 
-function addDownloadButton() {
-  const footer = qs("p.text-link.text-footer");
-  if (!footer || qs(".download-movie-button")) return false;
+/* ---------------------------------------------------------------- buttons */
 
-  injectStyles();
+/**
+ * A button group per category: the main button, plus a ▾ button that is only
+ * shown when a default source is set. Then the main button opens the default
+ * source directly and ▾ opens the full list.
+ */
+function createMenuButton(category) {
+  const config = LBDL.CATEGORIES[category];
+  const group = createEl("span", { className: `lbdl-group lbdl-group-${category}` });
 
-  const btn = createEl("a", {
-    textContent: "Download",
+  const main = createEl("a", {
+    textContent: config.buttonText,
     href: "#",
-    className: "download-movie-button",
+    className: `lbdl-btn lbdl-btn-main lbdl-btn-${category}`,
   });
+  main.setAttribute("role", "button");
+  main.setAttribute("aria-expanded", "false");
 
-  attachDropdown(btn, async () => {
-    await loadSettings();
-    return trackers;
-  }, "No sources enabled", "download-dropdown");
-
-  const watchBtn = createEl("a", {
-    textContent: "Watch",
+  const arrow = createEl("a", {
+    textContent: "▾",
     href: "#",
-    className: "watch-movie-button",
-    hidden: !watchButtonEnabled,
+    className: `lbdl-btn lbdl-btn-arrow lbdl-arrow-${category}`,
+    title: `All ${config.label.toLowerCase()} sources`,
+    hidden: true,
+  });
+  arrow.setAttribute("role", "button");
+  arrow.setAttribute("aria-haspopup", "menu");
+  arrow.setAttribute("aria-expanded", "false");
+  arrow.setAttribute("aria-label", `All ${config.label.toLowerCase()} sources`);
+
+  main.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (openDefaultSource(category)) return;
+    // detail === 0 means the click came from the keyboard (Enter).
+    toggleMenu(category, { focusFirst: e.detail === 0 });
   });
 
-  attachDropdown(
-    watchBtn,
-    async () => {
-      await loadSettings();
-      return streamingSources;
-    },
-    "No streaming services enabled",
-    "watch-dropdown",
-  );
-
-  const wrapper = createEl("div", {
-    className: "download-wrapper",
+  arrow.addEventListener("click", (e) => {
+    e.preventDefault();
+    toggleMenu(category, { focusFirst: e.detail === 0 });
   });
 
-  Object.assign(wrapper.style, {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    marginTop: "8px",
-  });
+  group.append(main, arrow);
+  return group;
+}
 
-  wrapper.appendChild(btn);
-  wrapper.appendChild(watchBtn);
-  wrapper.appendChild(createReleaseInfo());
-  wrapper.appendChild(createInfoButton());
+/** Opens the category's default source. Returns false if there is none or it can't be built. */
+function openDefaultSource(category) {
+  const source = LBDL.getDefaultSource(category, state.settings, state.sources);
+  if (!source) return false;
 
-  footer.parentNode.insertBefore(wrapper, footer.nextSibling);
+  const { url } = LBDL.buildSourceUrl(source, getMovie(), state.settings, category);
+  if (!url) return false; // e.g. IMDb ID missing: fall back to the list
 
+  closeMenus();
+  openUrls([url], true);
   return true;
 }
 
 function createInfoButton() {
-  const btn = createEl("a", {
+  return createEl("a", {
     textContent: "🛈",
-    href: cachedMovieUrl ?? "https://www.dvdsreleasedates.com",
+    href: releaseInfo?.url ?? "https://www.dvdsreleasedates.com",
     target: "_blank",
     rel: "noopener noreferrer",
     title: "Source: dvdsreleasedates.com",
-    className: "release-info-btn",
+    className: "lbdl-info",
   });
-
-  Object.assign(btn.style, {
-    fontSize: "14px",
-    color: "#8f8f8f",
-    textDecoration: "none",
-    cursor: "pointer",
-    lineHeight: "1",
-  });
-
-  btn.addEventListener("mouseover", () => (btn.style.color = "#fff"));
-  btn.addEventListener("mouseout", () => (btn.style.color = "#8f8f8f"));
-
-  return btn;
 }
+
+function createReleaseInfo() {
+  return createEl("span", {
+    className: "lbdl-release",
+    textContent: "Loading release dates…",
+  });
+}
+
+function syncButtons() {
+  LBDL.CATEGORY_ORDER.forEach((category) => {
+    const group = qs(`.lbdl-group-${category}`);
+    if (!group) return;
+
+    group.hidden = !LBDL.isCategoryVisible(category, state.settings);
+
+    const source = LBDL.getDefaultSource(category, state.settings, state.sources);
+    const main = qs(".lbdl-btn-main", group);
+    const arrow = qs(".lbdl-btn-arrow", group);
+
+    group.classList.toggle("has-default", Boolean(source));
+    arrow.hidden = !source;
+    main.title = source ? `Open ${source.name}` : "";
+    if (source) {
+      main.removeAttribute("aria-haspopup");
+    } else {
+      main.setAttribute("aria-haspopup", "menu");
+    }
+  });
+  closeMenus();
+}
+
+/** The button the menu belongs to: ▾ when a default is set, otherwise the main button. */
+function getMenuAnchor(category) {
+  const group = qs(`.lbdl-group-${category}`);
+  if (!group || group.hidden) return null;
+  const arrow = qs(".lbdl-btn-arrow", group);
+  return { group, button: arrow.hidden ? qs(".lbdl-btn-main", group) : arrow };
+}
+
+function tryInject() {
+  if (injected) return true;
+
+  const footer = qs("p.text-link.text-footer");
+  if (!footer) return false;
+
+  injectStyles();
+
+  const wrapper = createEl("div", { className: "lbdl-wrapper" });
+  LBDL.CATEGORY_ORDER.forEach((category) =>
+    wrapper.appendChild(createMenuButton(category)),
+  );
+  wrapper.append(createReleaseInfo(), createInfoButton());
+  footer.after(wrapper);
+
+  injected = true;
+  syncButtons();
+  loadReleaseDates(getMovie());
+  return true;
+}
+
+/* --------------------------------------------------------------- dropdown */
+
+function closeMenus() {
+  document.querySelectorAll(".lbdl-dropdown").forEach((el) => el.remove());
+  openMenu?.button.setAttribute("aria-expanded", "false");
+  openMenu = null;
+}
+
+function openUrls(urls, active) {
+  browser.runtime
+    .sendMessage({ action: "openTabs", urls, active })
+    .catch(() => {
+      urls.forEach((url) => window.open(url, "_blank", "noopener,noreferrer"));
+    });
+}
+
+function toggleMenu(category, { focusFirst = false } = {}) {
+  const wasOpen = openMenu?.category === category;
+  closeMenus();
+  if (wasOpen) return;
+
+  const anchor = getMenuAnchor(category);
+  if (!anchor) return;
+  const btn = anchor.button;
+
+  const movie = getMovie();
+  const items = LBDL.sortedSources(state.sources[category])
+    .filter((source) => source.enabled)
+    .map((source) => ({
+      source,
+      ...LBDL.buildSourceUrl(source, movie, state.settings, category),
+    }));
+
+  // A single source opens directly, no menu needed.
+  if (items.length === 1 && items[0].url) {
+    openUrls([items[0].url], true);
+    return;
+  }
+
+  const dropdown = renderDropdown(category, items);
+  document.body.appendChild(dropdown);
+  positionDropdown(dropdown, anchor.group);
+
+  openMenu = { el: dropdown, category, button: btn };
+  btn.setAttribute("aria-expanded", "true");
+
+  if (focusFirst) qs("a.lbdl-item", dropdown)?.focus();
+}
+
+function positionDropdown(dropdown, btn) {
+  const rect = btn.getBoundingClientRect();
+  const maxLeft =
+    document.documentElement.clientWidth - dropdown.offsetWidth - 8;
+  const left = Math.max(8, Math.min(rect.left, maxLeft));
+
+  dropdown.style.top = `${rect.bottom + window.scrollY + 2}px`;
+  dropdown.style.left = `${left + window.scrollX}px`;
+}
+
+function renderDropdown(category, items) {
+  const dropdown = createEl("div", { className: "lbdl-dropdown" });
+  dropdown.setAttribute("role", "menu");
+
+  if (!items.length) {
+    dropdown.appendChild(
+      createEl("div", {
+        className: "lbdl-empty",
+        textContent: LBDL.CATEGORIES[category].emptyMessage,
+      }),
+    );
+    return dropdown;
+  }
+
+  items.forEach(({ source, url, missing }) => {
+    if (!url) {
+      const disabled = createEl("span", {
+        className: "lbdl-item is-disabled",
+        textContent: source.name,
+        title: missing?.length
+          ? `Unavailable: ${LBDL.describeMissing(missing)} not found on this page`
+          : "Unavailable: invalid source URL",
+      });
+      dropdown.appendChild(disabled);
+      return;
+    }
+
+    const link = createEl("a", {
+      className: "lbdl-item",
+      href: url,
+      textContent: source.name,
+      title: url,
+    });
+    link.setAttribute("role", "menuitem");
+
+    // Every click (normal, Ctrl/Cmd, Shift or middle) opens one foreground tab.
+    const open = (e) => {
+      if (e.type === "auxclick" && e.button !== 1) return;
+      e.preventDefault();
+      openUrls([url], true);
+      closeMenus();
+    };
+    link.addEventListener("click", open);
+    link.addEventListener("auxclick", open);
+    dropdown.appendChild(link);
+  });
+
+  return dropdown;
+}
+
+document.addEventListener("click", (e) => {
+  if (!openMenu) return;
+  if (e.target instanceof Element && e.target.closest(".lbdl-dropdown, .lbdl-btn")) {
+    return;
+  }
+  closeMenus();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (!openMenu) return;
+
+  if (e.key === "Escape") {
+    const { button } = openMenu;
+    closeMenus();
+    button.focus();
+    e.preventDefault();
+    return;
+  }
+
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const links = [...openMenu.el.querySelectorAll("a.lbdl-item")];
+    if (!links.length) return;
+    const index = links.indexOf(document.activeElement);
+    const next =
+      e.key === "ArrowDown"
+        ? (index + 1) % links.length
+        : index <= 0
+          ? links.length - 1
+          : index - 1;
+    links[next].focus();
+    e.preventDefault();
+  }
+});
+
+/* ---------------------------------------------------------- release dates */
 
 function parseReleaseDates(html) {
   const doc = new DOMParser().parseFromString(html, "text/html");
@@ -436,14 +461,13 @@ function parseReleaseDates(html) {
   if (!section) return { hasData: false };
 
   const spans = [...section.querySelectorAll("span")];
-
   const dvdBluray = spans[0] ? normalizeDate(spans[0]) : null;
   const digital = spans[1] ? normalizeDate(spans[1]) : null;
 
   return {
     dvdBluray,
     digital,
-    hasData: Boolean(dvdBluray || digital),
+    hasData: Boolean(dvdBluray?.value || digital?.value),
   };
 }
 
@@ -461,93 +485,126 @@ function normalizeDate(span) {
   return { value, status };
 }
 
-function getStatusColor(status) {
-  return (
-    {
-      upcoming: "#e5533d",
-      released: "#4caf50",
-      unknown: "#8f8f8f",
-    }[status] || "#8f8f8f"
-  );
+function renderReleaseInfo() {
+  const el = qs(".lbdl-release");
+  if (!el || !releaseInfo) return;
+
+  const dates = releaseInfo.dates;
+  if (!dates?.hasData) {
+    el.textContent = NO_RELEASE_DATA_MSG;
+  } else {
+    el.replaceChildren();
+    [
+      ["DVD/Blu-ray", dates.dvdBluray],
+      ["Digital", dates.digital],
+    ]
+      .filter(([, date]) => date?.value)
+      .forEach(([label, date], i) => {
+        if (i) el.append(" • ");
+        el.append(`${label}: `);
+        const value = createEl("span", { textContent: date.value });
+        value.style.color = STATUS_COLORS[date.status] ?? STATUS_COLORS.unknown;
+        el.append(value);
+      });
+  }
+
+  const infoBtn = qs(".lbdl-info");
+  if (infoBtn && releaseInfo.url) infoBtn.href = releaseInfo.url;
 }
 
-function formatReleaseInfo(dates) {
-  if (!dates?.hasData) return NO_RELEASE_DATA_MSG;
+async function cacheReleaseInfo(key, data, ttl) {
+  try {
+    await browser.storage.local.set({
+      [key]: { data, expires: Date.now() + ttl },
+    });
+  } catch (err) {
+    console.warn("[Letterboxd DL] Could not cache release dates:", err);
+  }
+}
 
-  const parts = [];
+async function loadReleaseDates(movie) {
+  if (!movie.title) {
+    releaseInfo = { dates: null, url: null };
+    renderReleaseInfo();
+    return;
+  }
 
-  if (dates.dvdBluray?.value) {
-    parts.push(
-      `DVD/Blu-ray: <span style="color:${getStatusColor(
-        dates.dvdBluray.status,
-      )}">${dates.dvdBluray.value}</span>`,
+  const key = `${LBDL.RELEASE_CACHE_PREFIX}${
+    movie.slug || `${movie.title}|${movie.year}`
+  }`;
+
+  try {
+    const cached = (await browser.storage.local.get(key))[key];
+    if (cached?.expires > Date.now()) {
+      releaseInfo = cached.data;
+      renderReleaseInfo();
+      return;
+    }
+  } catch {
+    // Storage unavailable: just fetch.
+  }
+
+  let response = null;
+  try {
+    response = await browser.runtime.sendMessage({
+      action: "getReleaseDates",
+      movieTitle: movie.title,
+      movieYear: movie.year,
+    });
+  } catch (err) {
+    console.warn("[Letterboxd DL] Release date lookup failed:", err);
+  }
+
+  if (response?.success) {
+    const dates = parseReleaseDates(response.html);
+    releaseInfo = { dates, url: response.url };
+
+    const complete =
+      dates.hasData &&
+      [dates.dvdBluray, dates.digital].every(
+        (date) => !date?.value || date.status === "released",
+      );
+    cacheReleaseInfo(
+      key,
+      releaseInfo,
+      complete ? RELEASE_CACHE_TTL.complete : RELEASE_CACHE_TTL.pending,
     );
+  } else {
+    releaseInfo = { dates: null, url: null };
+    if (response?.notFound) {
+      cacheReleaseInfo(key, releaseInfo, RELEASE_CACHE_TTL.notFound);
+    }
   }
 
-  if (dates.digital?.value) {
-    parts.push(
-      `Digital: <span style="color:${getStatusColor(
-        dates.digital.status,
-      )}">${dates.digital.value}</span>`,
-    );
-  }
-
-  return parts.join(" • ");
+  renderReleaseInfo();
 }
 
-function createReleaseInfo() {
-  const el = createEl("span", {
-    className: "release-dates-info",
-    textContent: "Loading release dates…",
-  });
+/* ------------------------------------------------------------ live update */
 
-  Object.assign(el.style, {
-    fontSize: "12px",
-    color: "#8f8f8f",
-    whiteSpace: "nowrap",
-  });
+browser.storage.onChanged.addListener(async (_changes, area) => {
+  if (area !== "sync") return;
+  await refreshState();
+  syncButtons();
+});
 
-  if (cachedReleaseDates) {
-    el.innerHTML = formatReleaseInfo(cachedReleaseDates);
+browser.runtime.onMessage.addListener((request) => {
+  if (request?.action === "openMenu" && LBDL.CATEGORIES[request.category]) {
+    toggleMenu(request.category, { focusFirst: true });
   }
+});
 
-  return el;
-}
+/* ------------------------------------------------------------------- init */
 
 (async function init() {
-  await loadSettings();
+  await refreshState();
 
-  const observer = new MutationObserver(addDownloadButton);
+  if (tryInject()) return;
+
+  const observer = new MutationObserver(() => {
+    if (tryInject()) observer.disconnect();
+  });
   observer.observe(document.body, { childList: true, subtree: true });
 
-  addDownloadButton();
-
-  const title = qs("h1.headline-1.primaryname span.name")?.textContent.trim();
-  const year = qs(".releasedate a")?.textContent.trim();
-
-  browser.runtime.sendMessage(
-    { action: "getReleaseDates", movieTitle: title, movieYear: year },
-    (response) => {
-      if (!response?.success) {
-        const infoEl = qs(".release-dates-info");
-        if (infoEl) {
-          infoEl.textContent = "No release date information available";
-        }
-        return;
-      }
-
-      cachedReleaseDates = parseReleaseDates(response.html);
-      cachedMovieUrl = response.url;
-
-      const infoEl = qs(".release-dates-info");
-      if (infoEl) {
-        infoEl.innerHTML = formatReleaseInfo(cachedReleaseDates);
-      }
-
-      const infoBtn = qs(".release-info-btn");
-      if (infoBtn) {
-        infoBtn.href = cachedMovieUrl;
-      }
-    },
-  );
+  // Stop watching if the expected element never appears.
+  setTimeout(() => observer.disconnect(), 30000);
 })();

@@ -1,0 +1,106 @@
+# Builds every package on each push / pull request.
+# Pushing a version tag (e.g. v2.1.0) also publishes a GitHub Release with all files attached:
+#   git tag v2.1.0 && git push origin v2.1.0
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packages:
+    name: Chrome, Firefox and Safari packages
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Read and check version
+        id: version
+        run: |
+          node <<'EOF'
+          const fs = require("fs");
+          const files = ["manifest.chrome.json", "manifest.firefox.json", "manifest.safari.json"];
+          const versions = files.map((f) => JSON.parse(fs.readFileSync(`extension/${f}`, "utf8")).version);
+          if (new Set(versions).size !== 1) {
+            console.error(`Manifest versions differ: ${files.map((f, i) => `${f}=${versions[i]}`).join(", ")}`);
+            process.exit(1);
+          }
+          const tag = process.env.GITHUB_REF_TYPE === "tag" ? process.env.GITHUB_REF_NAME : null;
+          if (tag && tag !== `v${versions[0]}`) {
+            console.error(`Tag ${tag} does not match manifest version ${versions[0]}`);
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${versions[0]}\n`);
+          console.log(`Version ${versions[0]}`);
+          EOF
+
+      - name: Check JavaScript syntax
+        run: for f in extension/*.js build.js; do node --check "$f"; done
+
+      - name: Build
+        run: |
+          npm install --no-save --no-package-lock adm-zip@0.5.16
+          node build.js
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: letterboxd-dl-*.zip
+          if-no-files-found: error
+
+  safari-app:
+    name: Safari app (macOS)
+    runs-on: macos-latest
+    needs: packages
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Safari app
+        run: bash build-safari.sh --build
+
+      - name: Zip app
+        run: |
+          APP="$(find safari-build/DerivedData -name 'Letterboxd DL.app' -type d -path '*/Release/*' | head -n 1)"
+          if [ -z "$APP" ]; then echo "App not found" >&2; exit 1; fi
+          ditto -c -k --keepParent "$APP" "letterboxd-dl-${{ needs.packages.outputs.version }}-safari-app.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: safari-app
+          path: letterboxd-dl-*-safari-app.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    # Still release the Chrome/Firefox packages if only the Safari app failed.
+    if: github.ref_type == 'tag' && !cancelled() && needs.packages.result == 'success'
+    runs-on: ubuntu-latest
+    needs: [packages, safari-app]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

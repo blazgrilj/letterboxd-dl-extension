@@ -2,26 +2,38 @@
   "manifest_version": 2,
   "name": "Letterboxd DL Extension",
   "description": "Adds Download and Watch buttons with source lists and shows release dates on Letterboxd.",
-  "version": "2.0.0",
+  "version": "2.1.0",
 
   "permissions": [
     "storage",
     "activeTab",
+    "contextMenus",
     "*://letterboxd.com/*",
     "*://www.dvdsreleasedates.com/*"
   ],
 
   "background": {
-    "scripts": ["release_dates_service.js"],
+    "scripts": ["defaults.js", "background.js"],
     "persistent": false
   },
 
   "content_scripts": [
     {
       "matches": ["*://letterboxd.com/film/*"],
-      "js": ["content.js"]
+      "js": ["defaults.js", "content.js"]
     }
   ],
+
+  "commands": {
+    "open-download": {
+      "suggested_key": { "default": "Alt+Shift+D" },
+      "description": "Open the Download menu"
+    },
+    "open-watch": {
+      "suggested_key": { "default": "Alt+Shift+W" },
+      "description": "Open the Watch menu"
+    }
+  },
 
   "browser_action": {
     "default_popup": "popup.html"
